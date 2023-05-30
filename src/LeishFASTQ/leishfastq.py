@@ -59,6 +59,9 @@ def find_flanked_sequences_in_fastq_file(filename,
             if m is not None:
                 # The found sequence is the second group.
                 found_sequence_count[m.group(2)] += 1
+            else:
+                # If no match is found, count this in the "garbage" group
+                found_sequence_count[''] += 1
     
     # The barcode sequences need to be reverse complemented for the reverse reads.
     if reverse_read:
