@@ -5,6 +5,15 @@ import regex
 import itertools
 import concurrent.futures
 
+_complement_map = {
+    'A': 'T',
+    'T': 'A',
+    'G': 'C',
+    'C': 'G',
+}
+def _reverse_complement(sequence):
+    return ''.join([_complement_map[c] for c in sequence][::-1])
+
 def find_flanked_sequences_in_fastq_file(filename,
                                          flank_sequences=('GTGTATCGGATGTCAGTTGC', 'GTATAATGCAGACCTGCTGC'),
                                          sequence_length=17,
@@ -24,6 +33,12 @@ def find_flanked_sequences_in_fastq_file(filename,
     Returns a `dict` with the found sequences as keys and their read counts as values.
     """
     flank_left, flank_right = flank_sequences
+
+    # We need to reverse complement the flanking sequences for the reverse reads.
+    reverse_read = '_R2_' in filename.stem
+    if reverse_read:
+        flank_left, flank_right = _reverse_complement(flank_right), _reverse_complement(flank_left)
+
     # Construct regular expressions
     if allow_single_substitution:
         # Use the slightly slower `regex` package if substitutions are allowed.
@@ -44,6 +59,10 @@ def find_flanked_sequences_in_fastq_file(filename,
             if m is not None:
                 # The found sequence is the second group.
                 found_sequence_count[m.group(2)] += 1
+    
+    # The barcode sequences need to be reverse complemented for the reverse reads.
+    if reverse_read:
+        found_sequence_count = {_reverse_complement(seq): count for seq, count in found_sequence_count.items()}
 
     # Return a regular dict.
     return dict(found_sequence_count)
