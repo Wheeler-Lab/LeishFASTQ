@@ -83,7 +83,7 @@ def match_sequences(known_sequences, candidate_sequence_counts):
     """
     mapped = defaultdict(lambda: {'count': 0, 'mismatched': 0})
     for sequence, count in candidate_sequence_counts.items():
-        if sequence not in known_sequences:
+        if sequence not in known_sequences and sequence != '':
             sequence_regex = regex.compile(f'({sequence}){{s<=1}}')
             fuzzy_matches = [candidate for candidate in known_sequences if sequence_regex.match(candidate) is not None]
             if len(fuzzy_matches) == 1:
