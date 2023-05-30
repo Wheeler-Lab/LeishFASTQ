@@ -67,7 +67,7 @@ def find_flanked_sequences_in_fastq_file(filename,
     # Return a regular dict.
     return dict(found_sequence_count)
 
-def match_sequences(known_sequences, candidate_sequence_counts, allow_single_substitution=False):
+def match_sequences(known_sequences, candidate_sequence_counts):
     """
     match_sequence(known_sequences, candidate_sequence_counts, allow_single_substitution=False)
     
@@ -78,20 +78,22 @@ def match_sequences(known_sequences, candidate_sequence_counts, allow_single_sub
     
     Returns a `dict` with the matched sequences as keys and their read counts as values.
     """
-    mapped = defaultdict(lambda: 0)
+    mapped = defaultdict(lambda: {'count': 0, 'mismatched': 0})
     for sequence, count in candidate_sequence_counts.items():
-        if sequence in known_sequences:
-            mapped[sequence] += count
+        if sequence not in known_sequences:
+            sequence_regex = regex.compile(f'({sequence}){{s<=1}}')
+            fuzzy_matches = [candidate for candidate in known_sequences if sequence_regex.match(candidate) is not None]
+            if len(fuzzy_matches) == 1:
+                mapped[fuzzy_matches[0]]['count'] += count
+                mapped[fuzzy_matches[0]]['mismatched'] += count
+            elif len(fuzzy_matches) > 1:
+                raise ValueError('Multiple matches found - this should not be possible.')
+            else:
+                mapped[sequence]['count'] += count
         else:
-            if allow_single_substitution:
-                sequence_regex = regex.compile(f'({sequence}){{s<=1}}')
-                fuzzy_matches = [candidate for candidate in known_sequences if sequence_regex.match(candidate) is not None]
-                if len(fuzzy_matches) == 1:
-                    mapped[fuzzy_matches[0]] += count
-                elif len(fuzzy_matches) > 1:
-                    raise ValueError('Multiple matches found - this should not be possible.')
+            mapped[sequence]['count'] += count        
     
-    return {sequence: mapped[sequence] for sequence in sorted(mapped, key=lambda k: -mapped[k])}
+    return {sequence: mapped[sequence] for sequence in sorted(mapped, key=lambda k: -mapped[k]['count'])}
 
 def process_fastq(filename, known_sequences, allow_single_substitution=False):
     """
@@ -104,9 +106,13 @@ def process_fastq(filename, known_sequences, allow_single_substitution=False):
     Returns a tuple containing the filename and the dict with the matched sequence read counts.
     """
     found_sequences = find_flanked_sequences_in_fastq_file(filename, allow_single_substitution=allow_single_substitution)
-    return filename.stem, match_sequences(known_sequences, found_sequences, allow_single_substitution=allow_single_substitution)
+    if (known_sequences is not None) and allow_single_substitution:
+        found_sequences = match_sequences(known_sequences, found_sequences)
+    else:
+        found_sequences = {seq: {'count': count, 'mismatched': 0} for seq, count in found_sequences.items()}
+    return filename.stem, found_sequences
 
-def process_fastq_files(filenames, known_sequences, allow_single_substitution=False, progress_wrap=None):
+def process_fastq_files(filenames, known_sequences=None, allow_single_substitution=False, progress_wrap=None, nr_workers=None):
     """
     process_fastq_files(filenames, known_sequences, allow_single_substitution=False, progress_wrap=None)
     
@@ -120,9 +126,23 @@ def process_fastq_files(filenames, known_sequences, allow_single_substitution=Fa
     Returns a `dict` with the filenames as keys and their sequence read counts as values.
     """
     if progress_wrap is None:
-        progress_wrap = lambda x: x
-    with concurrent.futures.ProcessPoolExecutor() as executor:
+        progress_wrap = lambda x, *a, **kw: x
+    with concurrent.futures.ProcessPoolExecutor(max_workers=nr_workers) as executor:
         futures = [executor.submit(process_fastq, f, known_sequences, allow_single_substitution=allow_single_substitution)
                    for f in filenames]
         results = [r.result() for r in progress_wrap(concurrent.futures.as_completed(futures), total=len(futures))]
     return {r[0]: r[1] for r in results}
+
+def command_line():
+    import os
+    import pathlib
+    from pprint import pprint
+    import pandas as pd
+    from tqdm.auto import tqdm
+
+    cwd = pathlib.Path(os.getcwd())
+    results = process_fastq_files(cwd.glob('*.fastq.gz'), progress_wrap=tqdm)
+
+    for filename, counts in results.items():
+        if len(counts) > 0:
+            pd.DataFrame([{'barcode_sequence': seq, 'count': v['count'], 'mismatched': v['mismatched']} for seq, v in counts.items()]).sort_values('count', ascending=False).to_csv(filename.replace('.fastq.gz', '') + '.csv', index=False)
