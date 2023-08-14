@@ -5,6 +5,10 @@ import regex
 import itertools
 import concurrent.futures
 
+DEFAULT_BARCODE_LENGTH = 17
+DEFAULT_LEFT_FLANKING_SEQUENCE = "GTGTATCGGATGTCAGTTGC"
+DEFAULT_RIGHT_FLANKING_SEQUENCE = "GTATAATGCAGACCTGCTGC"
+
 _complement_map = {
     'A': 'T',
     'T': 'A',
@@ -15,8 +19,8 @@ def _reverse_complement(sequence):
     return ''.join([_complement_map[c] for c in sequence][::-1])
 
 def find_flanked_sequences_in_fastq_file(filename,
-                                         flank_sequences=('GTGTATCGGATGTCAGTTGC', 'GTATAATGCAGACCTGCTGC'),
-                                         sequence_length=17,
+                                         flank_sequences=(DEFAULT_LEFT_FLANKING_SEQUENCE, DEFAULT_RIGHT_FLANKING_SEQUENCE),
+                                         sequence_length=DEFAULT_BARCODE_LENGTH,
                                          allow_single_substitution=False):
     """
     find_flanked_sequences_in_fastq_file(
@@ -98,7 +102,7 @@ def match_sequences(known_sequences, candidate_sequence_counts):
     
     return {sequence: mapped[sequence] for sequence in sorted(mapped, key=lambda k: -mapped[k]['count'])}
 
-def process_fastq(filename, known_sequences, allow_single_substitution=False):
+def process_fastq(filename, known_sequences, **kwargs):
     """
     process_fastq(filename, known_sequences, allow_single_substitution=False)
     
@@ -108,14 +112,14 @@ def process_fastq(filename, known_sequences, allow_single_substitution=False):
     
     Returns a tuple containing the filename and the dict with the matched sequence read counts.
     """
-    found_sequences = find_flanked_sequences_in_fastq_file(filename, allow_single_substitution=allow_single_substitution)
-    if (known_sequences is not None) and allow_single_substitution:
+    found_sequences = find_flanked_sequences_in_fastq_file(filename, **kwargs)
+    if (known_sequences is not None) and kwargs["allow_single_substitution"]:
         found_sequences = match_sequences(known_sequences, found_sequences)
     else:
         found_sequences = {seq: {'count': count, 'mismatched': 0} for seq, count in found_sequences.items()}
     return filename.stem, found_sequences
 
-def process_fastq_files(filenames, known_sequences=None, allow_single_substitution=False, progress_wrap=None, nr_workers=None):
+def process_fastq_files(filenames, known_sequences=None, progress_wrap=None, nr_workers=None, **kwargs):
     """
     process_fastq_files(filenames, known_sequences, allow_single_substitution=False, progress_wrap=None)
     
@@ -131,7 +135,7 @@ def process_fastq_files(filenames, known_sequences=None, allow_single_substituti
     if progress_wrap is None:
         progress_wrap = lambda x, *a, **kw: x
     with concurrent.futures.ProcessPoolExecutor(max_workers=nr_workers) as executor:
-        futures = [executor.submit(process_fastq, f, known_sequences, allow_single_substitution=allow_single_substitution)
+        futures = [executor.submit(process_fastq, f, known_sequences, **kwargs)
                    for f in filenames]
         results = [r.result() for r in progress_wrap(concurrent.futures.as_completed(futures), total=len(futures))]
     return {r[0]: r[1] for r in results}
@@ -139,13 +143,29 @@ def process_fastq_files(filenames, known_sequences=None, allow_single_substituti
 def command_line():
     import os
     import pathlib
-    from pprint import pprint
+    import argparse
+
     import pandas as pd
     from tqdm.auto import tqdm
 
-    cwd = pathlib.Path(os.getcwd())
-    results = process_fastq_files(cwd.glob('*.fastq.gz'), progress_wrap=tqdm)
+    parser = argparse.ArgumentParser(description="Find barcodes in gzipped fastq files.")
+    parser.add_argument('fastq-gz-file', type=pathlib.Path, nargs='+', help="List of FASTQ files to process")
+    parser.add_argument('--allow-mismatches', dest="mismatches", action='store_true', help="Allow up to one mismatch in each flank (default false)")
+    parser.add_argument('--left-flanking-sequence', dest='left_flanking_sequence', type=str, default=DEFAULT_LEFT_FLANKING_SEQUENCE, help="Left barcode flanking sequence (default: %(default)s)")
+    parser.add_argument('--right-flanking-sequence', dest='right_flanking_sequence', type=str, default=DEFAULT_RIGHT_FLANKING_SEQUENCE, help="Right barcode flanking sequence (default: %(default)s)")
+    parser.add_argument('--barcode-length', dest='barcode_length', type=int, default=17, help="Barcode length in nucleotides (default: %(default)d)")
+    parser.add_argument('--nr-workers', dest='nr_workers', type=int, default=None, help="Number of parallel processes to use (default: same as the number of cores)")
+    args = parser.parse_args()
 
-    for filename, counts in results.items():
+    results = process_fastq_files(
+        vars(args)['fastq-gz-file'],
+        allow_single_substitution=args.mismatches,
+        nr_workers=args.nr_workers,
+        flank_sequences=(args.left_flanking_sequence, args.right_flanking_sequence),
+        sequence_length=args.barcode_length,
+        progress_wrap=lambda *a, **kw: tqdm(*a, desc="Finding barcodes", **kw)
+    )
+
+    for filename, counts in tqdm(results.items(), total=len(results), desc="Saving data"):
         if len(counts) > 0:
             pd.DataFrame([{'barcode_sequence': seq, 'count': v['count'], 'mismatched': v['mismatched']} for seq, v in counts.items()]).sort_values('count', ascending=False).to_csv(filename.replace('.fastq.gz', '') + '.csv', index=False)
