@@ -21,7 +21,7 @@ def _reverse_complement(sequence):
 def find_flanked_sequences_in_fastq_file(filename,
                                          flank_sequences=(DEFAULT_LEFT_FLANKING_SEQUENCE, DEFAULT_RIGHT_FLANKING_SEQUENCE),
                                          sequence_length=DEFAULT_BARCODE_LENGTH,
-                                         allow_single_substitution=False):
+                                         allow_substitutions=0):
     """
     find_flanked_sequences_in_fastq_file(
         filename,
@@ -44,10 +44,10 @@ def find_flanked_sequences_in_fastq_file(filename,
         flank_left, flank_right = _reverse_complement(flank_right), _reverse_complement(flank_left)
 
     # Construct regular expressions
-    if allow_single_substitution:
+    if allow_substitutions > 0:
         # Use the slightly slower `regex` package if substitutions are allowed.
         # This packages allows fuzzy matching.
-        sequence_regex = regex.compile(f'[ATGC]*({flank_left}){{s<=1}}([ATGC]{{{sequence_length}}})({flank_right}){{s<=1}}[ATGC]*')
+        sequence_regex = regex.compile(f'[ATGC]*({flank_left}){{s<={allow_substitutions}}}([ATGC]{{{sequence_length}}})({flank_right}){{s<={allow_substitutions}}}[ATGC]*')
     else:
         # If not, use the builtin regex module.
         sequence_regex = re.compile(f'[ATGC]*({flank_left})([ATGC]{{{sequence_length}}})({flank_right})[ATGC]*')
@@ -74,7 +74,7 @@ def find_flanked_sequences_in_fastq_file(filename,
     # Return a regular dict.
     return dict(found_sequence_count)
 
-def match_sequences(known_sequences, candidate_sequence_counts):
+def match_sequences(known_sequences, candidate_sequence_counts, allow_substitutions):
     """
     match_sequence(known_sequences, candidate_sequence_counts, allow_single_substitution=False)
     
@@ -88,7 +88,7 @@ def match_sequences(known_sequences, candidate_sequence_counts):
     mapped = defaultdict(lambda: {'count': 0, 'mismatched': 0})
     for sequence, count in candidate_sequence_counts.items():
         if sequence not in known_sequences and sequence != '':
-            sequence_regex = regex.compile(f'({sequence}){{s<=1}}')
+            sequence_regex = regex.compile(f'({sequence}){{s<={allow_substitutions}}}')
             fuzzy_matches = [candidate for candidate in known_sequences if sequence_regex.match(candidate) is not None]
             if len(fuzzy_matches) == 1:
                 mapped[fuzzy_matches[0]]['count'] += count
@@ -113,8 +113,10 @@ def process_fastq(filename, known_sequences, **kwargs):
     Returns a tuple containing the filename and the dict with the matched sequence read counts.
     """
     found_sequences = find_flanked_sequences_in_fastq_file(filename, **kwargs)
-    if (known_sequences is not None) and kwargs["allow_single_substitution"]:
-        found_sequences = match_sequences(known_sequences, found_sequences)
+    if (known_sequences is not None) and (kwargs["allow_substitutions"] > 0):
+        if (kwargs['allow_substitutions'] > 1):
+            print("WARNING: Allowing more than one substitution in the barcode is not allowed because it leads to inconsistencies. Automatically reduced this to one.")
+        found_sequences = match_sequences(known_sequences, found_sequences, 1)
     else:
         found_sequences = {seq: {'count': count, 'mismatched': 0} for seq, count in found_sequences.items()}
     return filename.stem, found_sequences
@@ -150,16 +152,24 @@ def command_line():
 
     parser = argparse.ArgumentParser(description="Find barcodes in gzipped fastq files.")
     parser.add_argument('fastq-gz-file', type=pathlib.Path, nargs='+', help="List of FASTQ files to process")
-    parser.add_argument('--allow-mismatches', dest="mismatches", action='store_true', help="Allow up to one mismatch in each flank (default false)")
+    parser.add_argument('--allow-mismatches', dest="mismatches", type=int, default=0, help="Allow up to the given number of mismatches in each flank and the barcode, if a list of known barcodes is given (default %(default)s)")
+    parser.add_argument('--known-barcodes', dest='barcode_list', type=pathlib.Path, default=None, help="File containing a list of known barcodes to match against. This helps if mismatches are allowed.")
     parser.add_argument('--left-flanking-sequence', dest='left_flanking_sequence', type=str, default=DEFAULT_LEFT_FLANKING_SEQUENCE, help="Left barcode flanking sequence (default: %(default)s)")
     parser.add_argument('--right-flanking-sequence', dest='right_flanking_sequence', type=str, default=DEFAULT_RIGHT_FLANKING_SEQUENCE, help="Right barcode flanking sequence (default: %(default)s)")
     parser.add_argument('--barcode-length', dest='barcode_length', type=int, default=17, help="Barcode length in nucleotides (default: %(default)d)")
     parser.add_argument('--nr-workers', dest='nr_workers', type=int, default=None, help="Number of parallel processes to use (default: same as the number of cores)")
     args = parser.parse_args()
 
+    if args.barcode_list is not None:
+        with open(args.barcode_list, 'r') as f:
+            barcode_list = [line.split(',')[0].strip() for line in f]
+    else:
+        barcode_list = None
+
     results = process_fastq_files(
         vars(args)['fastq-gz-file'],
-        allow_single_substitution=args.mismatches,
+        allow_substitutions=args.mismatches,
+        known_sequences=barcode_list,
         nr_workers=args.nr_workers,
         flank_sequences=(args.left_flanking_sequence, args.right_flanking_sequence),
         sequence_length=args.barcode_length,
