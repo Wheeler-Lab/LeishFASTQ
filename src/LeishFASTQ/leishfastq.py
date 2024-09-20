@@ -49,7 +49,7 @@ def find_flanked_sequences_in_fastq_file(filename,
     if allow_substitutions > 0:
         # Use the slightly slower `regex` package if substitutions are allowed.
         # This packages allows fuzzy matching.
-        sequence_regex = regex.compile(f'[ATGC]*({flank_left}){{s<={allow_substitutions}}}([ATGC]{{{sequence_length}}})({flank_right}){{s<={allow_substitutions}}}[ATGC]*')
+        sequence_regex = regex.compile(f'[ATGC]*({flank_left}){{s<={allow_substitutions},d<={allow_substitutions}}}([ATGC]{{{sequence_length}}})({flank_right}){{s<={allow_substitutions},d<={allow_substitutions}}}[ATGC]*')
     else:
         # If not, use the builtin regex module.
         sequence_regex = re.compile(f'[ATGC]*({flank_left})([ATGC]{{{sequence_length}}})({flank_right})[ATGC]*')
