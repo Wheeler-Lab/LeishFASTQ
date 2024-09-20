@@ -21,12 +21,14 @@ def _reverse_complement(sequence):
 def find_flanked_sequences_in_fastq_file(filename,
                                          flank_sequences=(DEFAULT_LEFT_FLANKING_SEQUENCE, DEFAULT_RIGHT_FLANKING_SEQUENCE),
                                          sequence_length=DEFAULT_BARCODE_LENGTH,
+                                         collect_invalid_sequences=False,
                                          allow_substitutions=0):
     """
     find_flanked_sequences_in_fastq_file(
         filename,
         flank_sequences=('GTGTATCGGATGTCAGTTGC', 'GTATAATGCAGACCTGCTGC'),
         sequence_length=17,
+        collect_invalid_sequences=False,
         allow_single_substitution=False)
     
     Find all sequences that are bracketed by the given left and right flank sequences
@@ -55,21 +57,30 @@ def find_flanked_sequences_in_fastq_file(filename,
     # Iterate over all 4-line blocks in the file (no checking for corrupt files is done!)
     # Match each sequence in the file with the regex, and record any found flanked sequence.
     found_sequence_count = defaultdict(lambda: 0)
+    if collect_invalid_sequences:
+        invalid_sequences = []
     with gzip.open(filename, 'rt') as f:
         sequences = itertools.islice(f, 1, None, 4)
         for sequence in sequences:
             # Strip the newline off the sequence.
-            m = sequence_regex.match(sequence.rstrip('\n'))
+            sequence = sequence.rstrip('\n')
+            m = sequence_regex.match(sequence)
             if m is not None:
                 # The found sequence is the second group.
                 found_sequence_count[m.group(2)] += 1
             else:
                 # If no match is found, count this in the "garbage" group
-                found_sequence_count[''] += 1
+                if collect_invalid_sequences:
+                    invalid_sequences.append(sequence)
+                else:
+                    found_sequence_count[''] += 1
     
     # The barcode sequences need to be reverse complemented for the reverse reads.
     if reverse_read:
         found_sequence_count = {_reverse_complement(seq): count for seq, count in found_sequence_count.items()}
+    
+    if collect_invalid_sequences:
+        found_sequence_count[''] = invalid_sequences
 
     # Return a regular dict.
     return dict(found_sequence_count)
